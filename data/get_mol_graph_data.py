@@ -1,5 +1,5 @@
 import dill
-from util import mol_to_graph_data_obj
+from util import graph_batch_from_smile
 
 def preprocess_and_save_graph_data_dill(atc4_mapping, save_path):
     """
@@ -10,15 +10,8 @@ def preprocess_and_save_graph_data_dill(atc4_mapping, save_path):
     graph_data_dict = {}
 
     for atc4, smiles_list in atc4_mapping['ATC4_to_SMILES'].items():
-        graph_data_list = []
-        for smile in smiles_list:
-            try:
-                graph_data = mol_to_graph_data_obj(smile)  # 生成分子图数据
-                graph_data_list.append(graph_data)
-            except Exception as e:
-                print(f"Error processing SMILES {smile} for ATC4 {atc4}: {e}")
-                continue
-        graph_data_dict[atc4] = graph_data_list  # 每个 ATC4 存储其对应的图数据列表
+        graph_data = graph_batch_from_smile(smiles_list)
+        graph_data_dict[atc4] = graph_data  # 每个 ATC4 存储其对应的图数据列表
 
     # 使用 dill 保存 graph_data 到文件
     with open(save_path, 'wb') as f:

@@ -1,4 +1,4 @@
-from util import PatientDataset, collate_fn, get_atc4_emb
+from util import PatientDataset, collate_fn, map2atc3_label
 import dill, random, torch
 from torch.utils.data import DataLoader
 from model import myModel
@@ -12,7 +12,7 @@ random.seed(42)
 train_ratio = 0.8
 val_ratio = 0.1
 test_ratio = 0.1
-node_features = 5
+node_features = 9
 hidden_dim1 = 256
 hidden_dim2 = 128
 mol_dim = 128
@@ -31,6 +31,8 @@ med_voc = voc['med_voc']
 diag_voc = voc['diag_voc']
 pro_voc = voc['pro_voc']
 med_voc_size = len(med_voc.word2idx)
+atc3_list = sorted(set(key[:4] for key in med_voc.word2idx.keys()))
+atc3_to_index = {prefix: idx for idx, prefix in enumerate(atc3_list)}
 
 with open(data_path, 'rb') as f:
     data = dill.load(f)
@@ -40,6 +42,7 @@ with open(mapping_path, 'rb') as f:
 
 with open(graph_data_path, 'rb') as f:
     graph_data_dict = dill.load(f)
+
 # ===========================================
 # get data
 # 总数据量
@@ -117,7 +120,8 @@ for epoch in range(num_epochs):
                 # 将 logits 转为二值预测
                 pred_labels = (pred_probs >= 0.5).astype(int)  # 阈值为 0.5，转为二值
                 true_labels = loss_bce_target.cpu().numpy()  # 真实标签转为 numpy
-                batch_jaccard += jaccard_score(true_labels, pred_labels)  # 计算 Jaccard 相似度
+                atc3_pred_labels, atc3_true_labels = map2atc3_label(med_voc.word2idx, atc3_to_index, pred_labels, true_labels)
+                batch_jaccard += jaccard_score(atc3_pred_labels, atc3_true_labels)  # 计算 Jaccard 相似度
                 total_samples += 1
         train_loss += batch_loss.item()
         jaccard_total += batch_jaccard  # 累加 Jaccard 相似度

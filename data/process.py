@@ -47,6 +47,18 @@ def med_process(med_file):
 
     return med_pd
 
+def filter_100_most_med(med_pd):
+    med_count = (
+        med_pd.groupby(by=["ATC4"])
+        .size()
+        .reset_index()
+        .rename(columns={0: "count"})
+        .sort_values(by=["count"], ascending=False)
+        .reset_index(drop=True)
+    )
+    med_pd = med_pd[med_pd["ATC4"].isin(med_count.loc[:100, "ATC4"])]
+
+    return med_pd.reset_index(drop=True)
 
 def codeMapping2atc4(med_pd):
     """
@@ -281,6 +293,7 @@ if __name__ == "__main__":
         med_pd_lg2[["SUBJECT_ID"]], on="SUBJECT_ID", how="inner"
     ).reset_index(drop=True)
     med_pd = codeMapping2atc4(med_pd)
+
     print("complete medication processing")
 
     # process of diagnosis

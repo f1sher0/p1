@@ -1,8 +1,10 @@
+import numpy as np
+import torch
+from ogb.utils import smiles2graph
 from rdkit import Chem
 from rdkit.Chem import DataStructs
 from rdkit.Chem import rdFingerprintGenerator
 from torch.utils.data import Dataset
-import torch
 from torch_geometric.data import Data
 
 
@@ -19,82 +21,42 @@ def cosine_similarity(embedding_a, embedding_b):
     return torch.nn.functional.cosine_similarity(embedding_a, embedding_b, dim=-1)
 
 
-# 将 SMILES 转换为图数据对象
-def mol_to_graph_data_obj(smiles):
-    mol = Chem.MolFromSmiles(smiles)
-    if mol is None:
-        raise ValueError(f"Invalid SMILES: {smiles}")
+def map2atc3_label(word2idx, atc3_to_index, l1, l2):
+    num_atc3 = len(atc3_to_index)
+    l1_mapped = [0] * num_atc3
+    l2_mapped = [0] * num_atc3
 
-    # 生成节点特征（原子特性）
-    atom_features = []
-    for atom in mol.GetAtoms():
-        atom_features.append([
-            atom.GetAtomicNum(),  # 原子编号
-            atom.GetDegree(),  # 原子连接的键数
-            atom.GetFormalCharge(),  # 形式电荷
-            int(atom.GetHybridization()),  # 杂化类型
-            int(atom.GetIsAromatic())  # 是否芳香性
-        ])
-    x = torch.tensor(atom_features, dtype=torch.float)
+    for code, presence in zip(word2idx.keys(), l1):
+        if presence == 1:
+            atc3 = code[:4]
+            l1_mapped[atc3_to_index[atc3]] = 1
 
-    # 生成边特征（键特性）
-    edge_index = []
-    edge_attr = []
-    for bond in mol.GetBonds():
-        i = bond.GetBeginAtomIdx()
-        j = bond.GetEndAtomIdx()
-        edge_index.append([i, j])
-        edge_index.append([j, i])  # 无向图
-        edge_attr.append([
-            bond.GetBondTypeAsDouble(),  # 键类型（单键、双键等）
-            bond.GetIsConjugated(),  # 是否共轭键
-            bond.IsInRing()  # 是否环结构
-        ])
-        edge_attr.append([
-            bond.GetBondTypeAsDouble(),
-            bond.GetIsConjugated(),
-            bond.IsInRing()
-        ])
-    edge_index = torch.tensor(edge_index, dtype=torch.long).t().contiguous()
-    edge_attr = torch.tensor(edge_attr, dtype=torch.float)
+    for code, presence in zip(word2idx.keys(), l2):
+        if presence == 1:
+            atc3 = code[:4]
+            l2_mapped[atc3_to_index[atc3]] = 1
 
-    return Data(x=x, edge_index=edge_index, edge_attr=edge_attr)
+    return l1_mapped, l2_mapped
 
+def graph_batch_from_smile(smiles_list):
+    edge_idxes, edge_feats, node_feats, lstnode, batch = [], [], [], 0, []
+    graphs = [smiles2graph(x) for x in smiles_list]
+    for idx, graph in enumerate(graphs):
+        edge_idxes.append(graph['edge_index'] + lstnode)
+        edge_feats.append(graph['edge_feat'])
+        node_feats.append(graph['node_feat'])
+        lstnode += graph['num_nodes']
+        batch.append(np.ones(graph['num_nodes'], dtype=np.int64) * idx)
 
-def get_atc4_emb(mapping, mol_encoder, output_dim):
-    # 用于存储 ATC4 的嵌入表示
-    atc4_embeddings = {}
-    for atc4, smiles_list in mapping['ATC4_to_SMILES'].items():
-        # 存储该 ATC4 下所有 SMILES 的嵌入
-        smile_embeddings = []
-        for smile in smiles_list:
-            try:
-                # 将 SMILES 转换为图数据对象
-                graph_data = mol_to_graph_data_obj(smile)
-                # 检查图的有效性
-                if graph_data.edge_index is None or graph_data.edge_index.numel() == 0:
-                    print(f"Skipping SMILES with no edges: {smile}")
-                    continue
-                if graph_data.x is None or graph_data.x.size(0) == 0:
-                    print(f"Invalid graph (no nodes) for SMILES: {smile}")
-                    continue
-                # 使用模型提取分子嵌入
-                embedding = mol_encoder(graph_data)
-                smile_embeddings.append(embedding)
-            except ValueError as e:
-                print(f"Invalid SMILES for {atc4}: {smile}, Error: {e}")
-                continue  # 跳过无效的 SMILES
-            except Exception as e:
-                print(f"Unexpected error for SMILES {smile} in ATC4 {atc4}: {e}")
-                continue
-        # 如果有合法的 SMILES，则计算该 ATC4 的整体表示（取平均值）
-        if smile_embeddings:
-            atc4_embedding = torch.stack(smile_embeddings).mean(dim=0)  # 平均嵌入
-            atc4_embeddings[atc4] = atc4_embedding
-        else:
-            print(f"No valid SMILES found for ATC4: {atc4}, assigning zero vector.")
-            atc4_embeddings[atc4] = torch.zeros(output_dim)  # 默认零向量
-    return atc4_embeddings
+    result = {
+        'edge_index': np.concatenate(edge_idxes, axis=-1),
+        'edge_attr': np.concatenate(edge_feats, axis=0),
+        'batch': np.concatenate(batch, axis=0),
+        'x': np.concatenate(node_feats, axis=0)
+    }
+    result = {k: torch.from_numpy(v) for k, v in result.items()}
+    result['num_nodes'] = lstnode
+    return Data(**result)
 
 
 # 自定义 Dataset 类

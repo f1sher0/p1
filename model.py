@@ -171,7 +171,9 @@ class myModel(nn.Module):
 
         # 将患者表示映射到药物表示的维度
         patient_emb_proj = self.patient_projector(patient_emb).to(self.device)
+        patient_emb_proj = self.patient_layernorm(patient_emb_proj)
         atc4_emb = self.atc4_projector(self.atc4_emb_matrix).to(self.device)
+        atc4_emb = self.atc4_layernorm(atc4_emb)
         # 匹配分数计算
-        predictions = self.pred_layernorm(torch.sigmoid(torch.mm(patient_emb_proj, atc4_emb.t())))
+        predictions = torch.sigmoid(self.pred_layernorm(torch.mm(patient_emb_proj, atc4_emb.t())))
         return predictions

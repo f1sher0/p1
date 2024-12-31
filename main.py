@@ -110,12 +110,13 @@ for epoch in range(num_epochs):
             for idx, adm in enumerate(patient_data):
                 input = patient_data[ : idx+1]
                 pred = model(input).squeeze(0)
-                pred_probs = torch.sigmoid(pred).detach().cpu().numpy()
+                pred_probs = pred.detach().cpu().numpy()
                 loss_bce_target = np.zeros((1, med_voc_size))
                 med = adm[2]
                 loss_bce_target[:, med] = 1
                 loss_bce_target = torch.from_numpy(loss_bce_target).float().squeeze(0).to(device)
                 batch_loss += criterion(pred, loss_bce_target)
+
                 # 计算 Jaccard 相似度
                 # 将 logits 转为二值预测
                 pred_labels = (pred_probs >= 0.5).astype(int)  # 阈值为 0.5，转为二值

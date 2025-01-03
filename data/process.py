@@ -293,7 +293,7 @@ if __name__ == "__main__":
         med_pd_lg2[["SUBJECT_ID"]], on="SUBJECT_ID", how="inner"
     ).reset_index(drop=True)
     med_pd = codeMapping2atc4(med_pd)
-
+    med_pd = filter_100_most_med(med_pd)
     print("complete medication processing")
 
     # process of diagnosis
@@ -312,8 +312,9 @@ if __name__ == "__main__":
     diag_voc, med_voc, pro_voc, valid_atc4 = create_str_token_mapping(data)
     print("obtain voc")
 
+    print(len(data))
     data = data[data["ATC4"].apply(lambda atc_list: all(atc in valid_atc4 for atc in atc_list))]
-
+    print(len(data))
     # create ehr sequence data
     records = create_patient_record(data, diag_voc, med_voc, pro_voc)
     print("obtain ehr sequence data")

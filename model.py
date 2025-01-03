@@ -1,7 +1,8 @@
 import torch
 import torch.nn.functional as F
-from torch import nn
-from torch_geometric.nn import GINConv
+from torch import nn, Tensor
+from torch_geometric.nn import global_mean_pool, MessagePassing, global_add_pool
+from ogb.graphproppred.mol_encoder import AtomEncoder, BondEncoder
 
 
 class PatientRepresentModel(nn.Module):
@@ -53,98 +54,137 @@ class PatientRepresentModel(nn.Module):
             item.weight.data.uniform_(-initrange, initrange)
 
 
+class GINConv(MessagePassing):
+    def __init__(self, nn, edge_dim, aggr="add"):
+        super(GINConv, self).__init__(aggr=aggr)
+        self.nn = nn  # MLP
+        self.bond_encoder = BondEncoder(edge_dim)
+
+    def forward(self, x, edge_index, edge_attr):
+        edge_emb = self.bond_encoder(edge_attr)
+        # 消息传递
+        out = self.propagate(edge_index, x=x, edge_attr=edge_emb)
+        return self.nn(out + x)  # 应用 MLP 和残差连接
+
+    def message(self, x_j, edge_attr):
+        # 消息传递时，将边特征加到邻居节点特征上
+        return F.relu(x_j + edge_attr)
+
+    def update(self, inputs):
+        return inputs
+
+
 # 定义GNN用于药物嵌入
 class MoleculeEncoder(nn.Module):
-    def __init__(self, node_features=9, hidden_dim=256, output_dim=256, device='cpu'):
+    def __init__(self, node_features=9, edge_features=3, mol_dim=256, device='cpu'):
         super(MoleculeEncoder, self).__init__()
+        self.node_encoder = AtomEncoder(mol_dim)
         self.conv1 = GINConv(
             nn.Sequential(
-                nn.Linear(node_features, hidden_dim),
-                nn.BatchNorm1d(hidden_dim),
+                nn.Linear(mol_dim, 2 * mol_dim),
+                nn.BatchNorm1d(2 * mol_dim),
                 nn.ReLU(),
-                nn.Linear(hidden_dim, hidden_dim),
+                nn.Linear(2 * mol_dim, mol_dim),
                 nn.ReLU()
-            )
+            ),
+            edge_dim=mol_dim  # 设置边特征的维度
         ).to(device)
-        # 第二层 GINConv
         self.conv2 = GINConv(
             nn.Sequential(
-                nn.Linear(hidden_dim, output_dim),
-                nn.BatchNorm1d(output_dim),
+                nn.Linear(mol_dim, mol_dim),
+                nn.BatchNorm1d(mol_dim),
                 nn.ReLU(),
-                nn.Linear(output_dim, output_dim),
+                nn.Linear(mol_dim, mol_dim),
                 nn.ReLU()
-            )
-        ).to(device)
-        self.conv3 = GINConv(
-            nn.Sequential(
-                nn.Linear(hidden_dim, output_dim),
-                nn.BatchNorm1d(output_dim),
-                nn.ReLU(),
-                nn.Linear(output_dim, output_dim),
-                nn.ReLU()
-            )
+            ),
+            edge_dim=mol_dim
         ).to(device)
         self.device = device
 
     def forward(self, data):
-        # 将图数据移动到设备上
-        data.to(self.device)
-        x, edge_index = data.x, data.edge_index
+        x, edge_index, edge_attr, batch = data.x, data.edge_index, data.edge_attr, data.batch
+        x, edge_index, edge_attr = x.to(self.device), edge_index.to(self.device), edge_attr.to(self.device)
 
         # 第一层 GINConv
-        x = self.conv1(x, edge_index)
+        x = self.conv1(self.node_encoder(x), edge_index, edge_attr)
         x = F.relu(x)
 
         # 第二层 GINConv
-        x = self.conv2(x, edge_index)
+        x = self.conv2(x, edge_index, edge_attr)
         x = F.relu(x)
 
-        x = self.conv3(x, edge_index)
-        x = F.relu(x)
-
-        # 读出操作（全图表示）
-        x = torch.sum(x, dim=0)  # 将节点嵌入进行求和，作为整个图的表示
+        # 全局池化，按图聚合
+        x = global_add_pool(x, batch)
         return x
 
 
+class AttentionFusion(nn.Module):
+    def __init__(self, patient_dim, mol_dim, hidden_dim=256):
+        super(AttentionFusion, self).__init__()
+        self.attention = nn.Sequential(
+            nn.Linear(patient_dim + mol_dim, hidden_dim),
+            nn.Tanh(),
+            nn.Linear(hidden_dim, 1)
+        )
+
+    def forward(self, patient_emb, atc4_emb):
+        """
+        :param patient_emb: (batch_size, patient_dim)
+        :param atc4_emb: (vocab_size, mol_dim)
+        :return: logits (batch_size, vocab_size)
+        """
+        batch_size = patient_emb.size(0)
+        vocab_size = atc4_emb.size(0)
+
+        # 扩展患者嵌入
+        patient_expanded = patient_emb.unsqueeze(1).repeat(1, vocab_size, 1)  # (batch_size, vocab_size, patient_dim)
+        atc4_expanded = atc4_emb.unsqueeze(0).repeat(batch_size, 1, 1)  # (batch_size, vocab_size, mol_dim)
+
+        # 拼接
+        combined = torch.cat([patient_expanded, atc4_expanded],
+                             dim=-1)  # (batch_size, vocab_size, patient_dim + mol_dim)
+
+        # 计算注意力得分
+        att_scores = self.attention(combined).squeeze(-1)  # (batch_size, vocab_size)
+
+        return att_scores  # logits for each ATC4
+
 class myModel(nn.Module):
-    def __init__(self, diag_voc_size, pro_voc_size, med_voc_size, med_voc, graph_data_dict, node_features=5,
-                 hidden_dim1=256, hidden_dim2=256,
+    def __init__(self, diag_voc_size, pro_voc_size, med_voc_size, med_voc, graph_data_dict, node_features=9,
+                 edge_features=3, patient_dim=256,
                  mol_dim=256, device='cpu'):
         """
         初始化患者-药物匹配模型
         :param diag_voc_size: 诊断词表大小
         :param pro_voc_size: 手术词表大小
         :param node_features: 药物分子图节点特征维度
-        :param hidden_dim1: 患者表示模块隐藏层维度
-        :param hidden_dim2: 药物分子嵌入模块隐藏层纬度
+        :param patient_dim: 患者表示模块隐藏层维度
         :param mol_dim: 药物分子嵌入维度
         :param atc4_mapping: ATC4 到 SMILES 的映射，用于生成药物嵌入
         """
         super(myModel, self).__init__()
         # 患者表示模块
-        self.patient_model = PatientRepresentModel(diag_voc=diag_voc_size, pro_voc=pro_voc_size, hidden_dim=hidden_dim1,
+        self.patient_model = PatientRepresentModel(diag_voc=diag_voc_size, pro_voc=pro_voc_size, hidden_dim=patient_dim,
                                                    device=device).to(device)
 
         # 药物分子表示模块
-        self.molecule_encoder = MoleculeEncoder(node_features, hidden_dim2, mol_dim, device=device).to(device)
+        self.molecule_encoder = MoleculeEncoder(node_features, edge_features, mol_dim, device=device).to(device)
 
         # 融合模块：将患者表示与药物表示映射到相同的空间
-        self.patient_projector = nn.Linear(hidden_dim1, mol_dim)  # 将患者表示映射到药物表示的维度
+        self.patient_projector = nn.Linear(patient_dim, mol_dim)  # 将患者表示映射到药物表示的维度
         self.atc4_projector = nn.Linear(mol_dim, mol_dim)  # 可选：进一步处理药物表示
 
         # LayerNorm
         self.patient_layernorm = nn.LayerNorm(mol_dim)  # 对患者表示进行规范化
         self.atc4_layernorm = nn.LayerNorm(mol_dim)  # 对药物嵌入进行规范化
         self.pred_layernorm = nn.LayerNorm(med_voc_size)
+        self.attention_fusion = AttentionFusion(patient_dim, mol_dim).to(device)
 
         self.med_voc = med_voc
         self.graph_data_dict = graph_data_dict
-        self.output_dim = mol_dim
+        self.mol_dim = mol_dim
         self.device = device
-        self.atc4_emb_matrix = self._build_atc4_embedding(graph_data_dict=self.graph_data_dict,
-                                                          output_dim=self.output_dim).to(self.device)
+        self.atc4_emb_matrix = self._build_atc4_embedding(graph_data_dict, mol_dim).to(device)
 
     def _build_atc4_embedding(self, graph_data_dict, output_dim):
         """
@@ -161,7 +201,7 @@ class myModel(nn.Module):
 
         for atc4, idx in self.med_voc.word2idx.items():
             if atc4 in atc4_emb:
-                atc4_matrix[idx] = atc4_emb[atc4]  # 将对应的 ATC4 嵌入放入矩阵的正确位置
+                atc4_matrix[idx] = torch.sum(atc4_emb[atc4], dim=0)  # 将对应的 ATC4 嵌入放入矩阵的正确位置
         return nn.Parameter(atc4_matrix, requires_grad=True).to(self.device)
 
     def forward(self, input):
@@ -174,6 +214,7 @@ class myModel(nn.Module):
         patient_emb_proj = self.patient_layernorm(patient_emb_proj)
         atc4_emb = self.atc4_projector(self.atc4_emb_matrix).to(self.device)
         atc4_emb = self.atc4_layernorm(atc4_emb)
+        logits = self.pred_layernorm(self.attention_fusion(patient_emb_proj, atc4_emb))
         # 匹配分数计算
-        predictions = torch.sigmoid(self.pred_layernorm(torch.mm(patient_emb_proj, atc4_emb.t())))
-        return predictions
+        # logits = self.pred_layernorm(torch.mm(patient_emb_proj, atc4_emb.t()))
+        return logits

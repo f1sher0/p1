@@ -103,7 +103,7 @@ class MoleculeEncoder(nn.Module):
 
     def forward(self, data):
         x, edge_index, edge_attr, batch = data.x, data.edge_index, data.edge_attr, data.batch
-        x, edge_index, edge_attr = x.to(self.device), edge_index.to(self.device), edge_attr.to(self.device)
+        x, edge_index, edge_attr, batch = x.to(self.device), edge_index.to(self.device), edge_attr.to(self.device), batch.to(self.device)
 
         # 第一层 GINConv
         x = self.conv1(self.node_encoder(x), edge_index, edge_attr)

@@ -101,7 +101,6 @@ for epoch in range(num_epochs):
     total_samples = 0  # 样本总数
 
     for step, batch in enumerate(train_loader):
-        print(step)
         optimizer.zero_grad()
         batch_loss = 0.0  # 当前 batch 的总损失
         batch_jaccard = 0.0  # 当前 batch 的 Jaccard 相似度
@@ -120,6 +119,7 @@ for epoch in range(num_epochs):
                 # 将 logits 转为二值预测
                 pred_probs = torch.sigmoid(logits).detach().cpu().numpy()
                 pred_labels = (pred_probs >= 0.5).astype(int)  # 阈值为 0.5，转为二值
+                print(pred_labels)
                 true_labels = loss_bce_target.cpu().numpy()  # 真实标签转为 numpy
                 atc3_pred_labels, atc3_true_labels = map2atc3_label(med_voc.word2idx, atc3_to_index, pred_labels, true_labels)
                 batch_jaccard += jaccard_score(atc3_pred_labels, atc3_true_labels)  # 计算 Jaccard 相似度
@@ -128,7 +128,7 @@ for epoch in range(num_epochs):
         jaccard_total += batch_jaccard  # 累加 Jaccard 相似度
         batch_loss.backward()
         optimizer.step()
-        print(f"Jaccard: {jaccard_total / total_samples:.4f}")
+        print(f"Epoch {epoch + 1} Batch {step + 1} Jaccard: {jaccard_total / total_samples:.4f}")
         # 打印每个 epoch 的平均损失和 Jaccard 相似度
     print(f"Epoch {epoch + 1}/{num_epochs}, Loss: {train_loss / len(train_loader):.4f}, "
           f"Jaccard: {jaccard_total / total_samples:.4f}")

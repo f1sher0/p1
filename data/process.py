@@ -1,7 +1,6 @@
 import pandas as pd
 import dill
 
-
 def med_process(med_file):
     """
     :param med_file: prescription med file from MIMIC
@@ -312,9 +311,8 @@ if __name__ == "__main__":
     diag_voc, med_voc, pro_voc, valid_atc4 = create_str_token_mapping(data)
     print("obtain voc")
 
-    print(len(data))
     data = data[data["ATC4"].apply(lambda atc_list: all(atc in valid_atc4 for atc in atc_list))]
-    print(len(data))
+
     # create ehr sequence data
     records = create_patient_record(data, diag_voc, med_voc, pro_voc)
     print("obtain ehr sequence data")
